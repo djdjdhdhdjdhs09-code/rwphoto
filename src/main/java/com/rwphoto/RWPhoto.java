@@ -299,4 +299,4 @@ public final class RWPhoto extends JavaPlugin implements Listener {
             }
         }
         return null;
-    }
+                }
