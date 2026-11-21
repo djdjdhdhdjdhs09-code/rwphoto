@@ -1,0 +1,21 @@
+# RWPhoto
+# Put your .jpg / .jpeg / .png pictures in:  plugins/RWPhoto/photos/
+
+limits:
+  max-dimension: 512      # biggest width or height of the selected area
+  max-blocks: 160000      # biggest number of blocks in one paste
+  blocks-per-tick: 4000   # lower this if the server lags while pasting
+
+# Which block colors may be used.
+# Groups: concrete, wool, terracotta, neutral, wood, extra
+palette:
+  groups: [concrete, wool, terracotta, neutral]
+  exclude: []             # block names to never use, e.g. [red_wool]
+
+look:
+  mode: fit               # fit = keep the picture's proportions, stretch = fill the whole area
+  dither: false           # false = flat clean colors (default), true = dotted mix for more detail
+  dither-strength: 0.6    # 0.0 - 1.0 (lower = less noisy), only used when dither is true
+  saturation: 1.15        # color strength (1.0 = original)
+  contrast: 1.08          # 1.0 = original
+  brightness: 0.0         # -0.2 darker ... 0.2 brighter
