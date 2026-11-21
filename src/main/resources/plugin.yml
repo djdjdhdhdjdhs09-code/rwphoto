@@ -1,0 +1,15 @@
+name: RWPhoto
+version: 1.0.0
+main: com.rwphoto.RWPhoto
+api-version: "1.21.11"
+description: Paste JPG/PNG pictures into the world as colored blocks, like WorldEdit but with images.
+commands:
+  rwphoto:
+    description: RWPhoto main command
+    usage: /rwphoto <wand|list|paste|undo|reload>
+    aliases: [rwpoto]
+    permission: rwphoto.use
+permissions:
+  rwphoto.use:
+    description: Allows using RWPhoto
+    default: op
