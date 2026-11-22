@@ -200,4 +200,139 @@ public final class RWPhoto extends JavaPlugin implements Listener {
                     + (Math.abs(sel.p1[2] - sel.p2[2]) + 1) + ")";
         }
         say(player, text, NamedTextColor.GREEN);
+    }    // ---- Commands -----------------------------------------------------------------
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!sender.hasPermission("rwphoto.use")) {
+            say(sender, "You do not have permission.", NamedTextColor.RED);
+            return true;
+        }
+        String sub = args.length == 0 ? "help" : args[0].toLowerCase(Locale.ROOT);
+
+        if (sub.equals("reload")) {
+            reloadConfig();
+            loadPalette();
+            say(sender, "Reloaded. " + palette.size() + " block colors.", NamedTextColor.GREEN);
+            return true;
+        }
+        if (sub.equals("list")) {
+            listPhotos(sender);
+            return true;
+        }
+        if (!(sender instanceof Player player)) {
+            say(sender, "This command can only be used in game.", NamedTextColor.RED);
+            return true;
+        }
+
+        switch (sub) {
+            case "wand" -> {
+                Map<Integer, ItemStack> left = player.getInventory().addItem(makeWand());
+                left.values().forEach(i -> player.getWorld().dropItem(player.getLocation(), i));
+                say(player, "You got the RWPhoto wand. Left click = pos1, right click = pos2.",
+                        NamedTextColor.GREEN);
+            }
+            case "pos1" -> setPosition(player, player.getLocation().getBlockX(),
+                    player.getLocation().getBlockY() - 1, player.getLocation().getBlockZ(), true);
+            case "pos2" -> setPosition(player, player.getLocation().getBlockX(),
+                    player.getLocation().getBlockY() - 1, player.getLocation().getBlockZ(), false);
+            case "paste" -> paste(player, args);
+            case "undo" -> undo(player);
+            case "map" -> {
+                Sel ms = selections.get(player.getUniqueId());
+                if (ms == null || ms.p1 == null || ms.p2 == null
+                        || !ms.world.equals(player.getWorld().getUID())) {
+                    say(player, "Select a wall first: /rwphoto wand, then click two corners.",
+                            NamedTextColor.RED);
+                } else {
+                    mapArt.place(player, args, ms.p1, ms.p2);
+                }
+            }
+            case "maplist" -> mapArt.list(player);
+            case "mapremove" -> mapArt.remove(player, args);
+            case "mapclear" -> {
+                Sel cs = selections.get(player.getUniqueId());
+                if (cs == null || cs.p1 == null || cs.p2 == null
+                        || !cs.world.equals(player.getWorld().getUID())) {
+                    say(player, "Select the picture area first: /rwphoto wand, then click two corners.",
+                            NamedTextColor.RED);
+                } else {
+                    mapArt.clear(player, cs.p1, cs.p2);
+                }
+            }
+            default -> help(player);
+        }
+        return true;
+    }
+
+    private void help(CommandSender s) {
+        say(s, "/rwphoto wand - get the selection wand", NamedTextColor.YELLOW);
+        say(s, "/rwphoto list - show your pictures (click one)", NamedTextColor.YELLOW);
+        say(s, "/rwphoto paste <file> [stretch] [flip] [r90|r180|r270] [dither|nodither]",
+                NamedTextColor.YELLOW);
+        say(s, "/rwphoto undo - undo the last paste", NamedTextColor.YELLOW);
+        say(s, "/rwphoto map <file> [fit] - real picture on a wall (maps)", NamedTextColor.YELLOW);
+        say(s, "/rwphoto maplist - list map pictures (click one to remove it)", NamedTextColor.YELLOW);
+        say(s, "/rwphoto mapremove [number] - remove the picture you look at (or by number)",
+                NamedTextColor.YELLOW);
+        say(s, "/rwphoto mapclear - remove all map pictures in the selection", NamedTextColor.YELLOW);
+        say(s, "/rwphoto reload - reload config", NamedTextColor.YELLOW);
+    }
+
+    // ---- List ---------------------------------------------------------------------
+
+    private List<File> photoFiles() {
+        File[] files = photosDir.listFiles(f -> f.isFile() && hasPhotoExtension(f.getName()));
+        List<File> list = new ArrayList<>();
+        if (files != null) {
+            list.addAll(Arrays.asList(files));
+        }
+        list.sort(Comparator.comparing(f -> f.getName().toLowerCase(Locale.ROOT)));
+        return list;
+    }
+
+    private static boolean hasPhotoExtension(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        for (String ext : EXTENSIONS) {
+            if (lower.endsWith(ext)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void listPhotos(CommandSender sender) {
+        List<File> files = photoFiles();
+        if (files.isEmpty()) {
+            say(sender, "No pictures found. Put .jpg files in plugins/RWPhoto/photos/ then run /rwphoto list again.",
+                    NamedTextColor.RED);
+            return;
+        }
+        say(sender, files.size() + " picture(s). Click one to get its paste command:", NamedTextColor.GOLD);
+        int shown = 0;
+        for (File f : files) {
+            if (shown++ >= 60) {
+                say(sender, "... and " + (files.size() - 60) + " more.", NamedTextColor.GRAY);
+                break;
+            }
+            sender.sendMessage(Component.text("  • ", NamedTextColor.DARK_GRAY)
+                    .append(Component.text(f.getName(), NamedTextColor.AQUA)
+                            .clickEvent(ClickEvent.suggestCommand("/rwphoto paste " + f.getName()))
+                            .hoverEvent(HoverEvent.showText(
+                                    Component.text("Click to get the paste command", NamedTextColor.YELLOW)))));
+        }
+    }
+
+    private File findPhoto(String name) {
+        for (File f : photoFiles()) {
+            String n = f.getName();
+            if (n.equalsIgnoreCase(name)) {
+                return f;
+            }
+            int dot = n.lastIndexOf('.');
+            if (dot > 0 && n.substring(0, dot).equalsIgnoreCase(name)) {
+                return f;
+            }
+        }
+        return null;
     }
