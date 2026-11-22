@@ -527,4 +527,94 @@ public final class RWPhoto extends JavaPlugin implements Listener {
                         NamedTextColor.GREEN);
             }
         });
+            }    private void undo(Player player) {
+        UUID id = player.getUniqueId();
+        if (busy.contains(id)) {
+            say(player, "Please wait, a paste is still running.", NamedTextColor.RED);
+            return;
+        }
+        Deque<Undo> stack = undos.get(id);
+        if (stack == null || stack.isEmpty()) {
+            say(player, "Nothing to undo.", NamedTextColor.RED);
+            return;
+        }
+        Undo u = stack.pop();
+        World world = getServer().getWorld(u.world);
+        if (world == null) {
+            say(player, "That world is not loaded.", NamedTextColor.RED);
+            return;
+        }
+        busy.add(id);
+        applyBlocks(world, u.xs, u.ys, u.zs, u.old, null, () -> {
+            busy.remove(id);
+            if (player.isOnline()) {
+                say(player, "Undone.", NamedTextColor.GREEN);
             }
+        });
+    }
+
+    /** Places blocks in small batches per tick so the server does not lag. */
+    private void applyBlocks(World world, int[] xs, int[] ys, int[] zs, BlockData[] data,
+                             BlockData[] oldOut, Runnable onDone) {
+        final int perTick = Math.max(100, getConfig().getInt("limits.blocks-per-tick", 4000));
+        new BukkitRunnable() {
+            int i = 0;
+
+            @Override
+            public void run() {
+                int end = Math.min(xs.length, i + perTick);
+                for (; i < end; i++) {
+                    BlockData d = data[i];
+                    int y = ys[i];
+                    if (d == null || y < world.getMinHeight() || y >= world.getMaxHeight()) {
+                        continue;
+                    }
+                    Block b = world.getBlockAt(xs[i], y, zs[i]);
+                    if (oldOut != null) {
+                        oldOut[i] = b.getBlockData();
+                    }
+                    b.setBlockData(d, false);
+                }
+                if (i >= xs.length) {
+                    cancel();
+                    onDone.run();
+                }
+            }
+        }.runTaskTimer(this, 0L, 1L);
+    }
+
+    // ---- Tab complete -------------------------------------------------------------
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        List<String> out = new ArrayList<>();
+        if (args.length == 1) {
+            for (String s : List.of("wand", "list", "paste", "map", "maplist", "mapremove", "mapclear", "undo",
+                    "pos1", "pos2", "reload")) {
+                if (s.startsWith(args[0].toLowerCase(Locale.ROOT))) {
+                    out.add(s);
+                }
+            }
+        } else if (args.length == 2 && (args[0].equalsIgnoreCase("paste") || args[0].equalsIgnoreCase("map"))) {
+            for (File f : photoFiles()) {
+                if (f.getName().toLowerCase(Locale.ROOT).startsWith(args[1].toLowerCase(Locale.ROOT))) {
+                    out.add(f.getName());
+                }
+            }
+        } else if (args.length >= 3 && args[0].equalsIgnoreCase("paste")) {
+            for (String s : List.of("stretch", "fit", "flip", "r90", "r180", "r270", "dither", "nodither")) {
+                if (s.startsWith(args[args.length - 1].toLowerCase(Locale.ROOT))) {
+                    out.add(s);
+                }
+            }
+        }
+        return out;
+    }
+
+    // ---- Helpers ------------------------------------------------------------------
+
+    private void say(CommandSender to, String text, NamedTextColor color) {
+        to.sendMessage(Component.text("[RWPhoto] ", NamedTextColor.GOLD)
+                .append(Component.text(text, color)));
+    }
+                }
