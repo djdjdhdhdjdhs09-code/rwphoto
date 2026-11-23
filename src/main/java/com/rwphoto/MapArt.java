@@ -15,6 +15,9 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.ItemFrame;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.server.MapInitializeEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.MapMeta;
 import org.bukkit.map.MapCanvas;
@@ -43,7 +46,7 @@ import java.util.UUID;
  * Map art: shows a real picture on a wall using maps inside invisible item frames.
  * Each map is 128 x 128 pixels, so the picture is much sharper than block pictures.
  */
-final class MapArt {
+final class MapArt implements Listener {
 
     private static final int TILE = 128;
 
@@ -75,13 +78,14 @@ final class MapArt {
         }
     }
 
-    private int register(World world, String fileName, List<Integer> mapIds) {
+    private int register(World world, String fileName, List<Integer> mapIds, List<String> frames) {
         int id = pictures.getInt("next", 1);
         pictures.set("next", id + 1);
         String path = "pictures." + id;
         pictures.set(path + ".file", fileName);
         pictures.set(path + ".world", world.getUID().toString());
         pictures.set(path + ".maps", mapIds);
+        pictures.set(path + ".frames", frames);
         savePictures();
         return id;
     }
@@ -102,6 +106,170 @@ final class MapArt {
             }
         }
         return -1;
+    }
+
+    /** Forget one map (its frame was removed on purpose). Drops the picture when no frames are left. */
+    private void forgetMap(int mapId) {
+        ConfigurationSection all = pictures.getConfigurationSection("pictures");
+        if (all == null) {
+            return;
+        }
+        for (String key : new ArrayList<>(all.getKeys(false))) {
+            String path = "pictures." + key;
+            List<String> frames = pictures.getStringList(path + ".frames");
+            if (frames.isEmpty()) {
+                continue;
+            }
+            List<String> keep = new ArrayList<>();
+            for (String line : frames) {
+                if (!line.endsWith(" " + mapId)) {
+                    keep.add(line);
+                }
+            }
+            if (keep.size() == frames.size()) {
+                continue;
+            }
+            if (keep.isEmpty()) {
+                pictures.set(path, null);
+            } else {
+                pictures.set(path + ".frames", keep);
+            }
+        }
+    }
+
+    private World worldOf(String uuid) {
+        if (uuid == null) {
+            return null;
+        }
+        try {
+            return Bukkit.getWorld(UUID.fromString(uuid));
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    private boolean entitiesReady(World w, int cx, int cz) {
+        try {
+            return w.getChunkAt(cx, cz).isEntitiesLoaded();
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /** 0 = frame missing, 1 = this map is there, 2 = another map picture is there now. */
+    private int frameState(World w, int x, int y, int z, BlockFace face, int mapId) {
+        int other = 0;
+        for (Entity e : w.getNearbyEntities(new BoundingBox(x, y, z, x + 1, y + 1, z + 1))) {
+            if (!(e instanceof ItemFrame fr) || fr.getFacing() != face) {
+                continue;
+            }
+            ItemStack it = fr.getItem();
+            if (it.getType() != Material.FILLED_MAP || !(it.getItemMeta() instanceof MapMeta mm)) {
+                continue;
+            }
+            MapView v = mm.getMapView();
+            if (v != null && v.getId() == mapId) {
+                return 1;
+            }
+            other = 2;
+        }
+        return other;
+    }    private ItemStack mapItem(MapView view) {
+        ItemStack item = new ItemStack(Material.FILLED_MAP);
+        MapMeta meta = (MapMeta) item.getItemMeta();
+        meta.setMapView(view);
+        item.setItemMeta(meta);
+        return item;
+    }
+
+    /**
+     * Self-repair: every 30 seconds, put back any picture frame that some other plugin
+     * (or a chunk reload) removed. Only looks at chunks that are loaded.
+     */
+    private void heal() {
+        ConfigurationSection all = pictures.getConfigurationSection("pictures");
+        if (all == null) {
+            return;
+        }
+        int restored = 0;
+        boolean changed = false;
+        for (String key : new ArrayList<>(all.getKeys(false))) {
+            String path = "pictures." + key;
+            World w = worldOf(pictures.getString(path + ".world"));
+            List<String> frames = pictures.getStringList(path + ".frames");
+            if (w == null || frames.isEmpty()) {
+                continue;
+            }
+            List<String> keep = new ArrayList<>();
+            for (String line : frames) {
+                int x;
+                int y;
+                int z;
+                int mapId;
+                BlockFace face;
+                try {
+                    String[] p = line.split(" ");
+                    x = Integer.parseInt(p[0]);
+                    y = Integer.parseInt(p[1]);
+                    z = Integer.parseInt(p[2]);
+                    face = BlockFace.valueOf(p[3]);
+                    mapId = Integer.parseInt(p[4]);
+                } catch (RuntimeException ex) {
+                    changed = true;
+                    continue;
+                }
+                if (!w.isChunkLoaded(x >> 4, z >> 4) || !entitiesReady(w, x >> 4, z >> 4)) {
+                    keep.add(line);
+                    continue;
+                }
+                int state = frameState(w, x, y, z, face, mapId);
+                if (state == 2) {
+                    changed = true;
+                    continue;
+                }
+                if (state == 0) {
+                    MapView view = Bukkit.getMap(mapId);
+                    if (view == null) {
+                        changed = true;
+                        continue;
+                    }
+                    spawnFrame(w, x, y, z, face, mapItem(view));
+                    restored++;
+                }
+                keep.add(line);
+            }
+            if (keep.isEmpty()) {
+                pictures.set(path, null);
+                changed = true;
+            } else if (keep.size() != frames.size()) {
+                pictures.set(path + ".frames", keep);
+                changed = true;
+            }
+        }
+        if (changed) {
+            savePictures();
+        }
+        if (restored > 0) {
+            plugin.getLogger().info("Restored " + restored + " map picture frames that were removed by something else.");
+        }
+    }
+
+    /** A map was (re)loaded by the server: put our picture back on it. */
+    @EventHandler
+    public void onMapInit(MapInitializeEvent e) {
+        MapView view = e.getMap();
+        File f = new File(mapsDir, "map_" + view.getId() + ".png");
+        if (!f.exists()) {
+            return;
+        }
+        try {
+            BufferedImage img = ImageIO.read(f);
+            if (img != null) {
+                attach(view, img);
+            }
+        } catch (IOException | RuntimeException ex) {
+            plugin.getLogger().warning("Could not load " + f.getName() + ": " + ex.getMessage());
+        }
     }
 
     // ---- /rwphoto maplist ------------------------------------------------------------
@@ -158,9 +326,7 @@ final class MapArt {
             }
         }
         removePicture(player, picId);
-    }
-
-    private void removePicture(CommandSender to, int picId) {
+                        }    private void removePicture(CommandSender to, int picId) {
         String path = "pictures." + picId;
         if (!pictures.isConfigurationSection(path)) {
             say(to, "No picture with number " + picId + ". Use /rwphoto maplist.", NamedTextColor.RED);
@@ -204,6 +370,8 @@ final class MapArt {
     // ---- Load saved pictures when the server starts ------------------------------
 
     void loadAll() {
+        Bukkit.getPluginManager().registerEvents(this, plugin);
+        Bukkit.getScheduler().runTaskTimer(plugin, this::heal, 200L, 600L);
         File[] files = mapsDir.listFiles(f -> f.isFile() && f.getName().startsWith("map_")
                 && f.getName().endsWith(".png"));
         if (files == null) {
@@ -349,13 +517,12 @@ final class MapArt {
                 });
             }
         });
-    }
-
-    private void build(Player player, World world, String fileName, BufferedImage big, int cols, int rows,
+    }    private void build(Player player, World world, String fileName, BufferedImage big, int cols, int rows,
                        boolean alongZ, boolean viewerPositive,
                        int minX, int maxX, int minY, int maxY, int minZ, int maxZ) {
         int placed = 0;
         List<Integer> mapIds = new ArrayList<>();
+        List<String> frameList = new ArrayList<>();
         for (int row = 0; row < rows; row++) {
             for (int col = 0; col < cols; col++) {
                 BufferedImage tile = new BufferedImage(TILE, TILE, BufferedImage.TYPE_INT_RGB);
@@ -391,10 +558,11 @@ final class MapArt {
                     face = viewerPositive ? BlockFace.SOUTH : BlockFace.NORTH;
                 }
                 spawnFrame(world, fx, y, fz, face, item);
+                frameList.add(fx + " " + y + " " + fz + " " + face.name() + " " + view.getId());
                 placed++;
             }
         }
-        int picId = register(world, fileName, mapIds);
+        int picId = register(world, fileName, mapIds, frameList);
         if (player.isOnline()) {
             say(player, "Done! Picture #" + picId + " (" + placed + " maps). Look at it and use "
                     + "/rwphoto mapremove to remove it.", NamedTextColor.GREEN);
@@ -417,6 +585,7 @@ final class MapArt {
             fr.setItemDropChance(0f);
             fr.setVisible(false);
             fr.setFixed(true);
+            fr.setInvulnerable(true);
         });
     }
 
@@ -444,13 +613,15 @@ final class MapArt {
             if (v == null || !new File(mapsDir, "map_" + v.getId() + ".png").exists()) {
                 continue;
             }
+            forgetMap(v.getId());
             fr.remove();
             removed++;
         }
+        if (removed > 0) {
+            savePictures();
+        }
         say(player, "Removed " + removed + " map frames.", NamedTextColor.GREEN);
-    }
-
-    // ---- Image scaling (high quality, no Bukkit classes) ---------------------------------
+    }    // ---- Image scaling (high quality, no Bukkit classes) ---------------------------------
 
     static BufferedImage fit(BufferedImage src, int tw, int th, boolean stretch) {
         BufferedImage flat = flatten(src);
@@ -532,4 +703,4 @@ final class MapArt {
         to.sendMessage(Component.text("[RWPhoto] ", NamedTextColor.GOLD)
                 .append(Component.text(text, color)));
     }
-                    }
+}
